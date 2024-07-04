@@ -329,7 +329,7 @@ class MixtureSustain(AbstractSustain):
 
     # ********************* STATIC METHODS
     @staticmethod
-    def plot_positional_var(samples_sequence, samples_f, n_samples, biomarker_labels=None, ml_f_EM=None, cval=False, subtype_order=None, biomarker_order=None, title_font_size=12, stage_font_size=10, stage_label="Event Position", stage_rot=0, stage_interval=1, label_font_size=10, label_rot=0, cmap="Oranges", biomarker_colours=None, figsize=None, separate_subtypes=False, save_path=None, save_kwargs={}):
+    def plot_positional_var(samples_sequence, samples_f, n_samples, biomarker_labels=None, ml_f_EM=None, cval=False, subtype_order=None, biomarker_order=None, title_font_size=12, stage_font_size=10, stage_label="Event Position", stage_rot=0, stage_interval=1, label_font_size=10, label_rot=0, cmap="Oranges", biomarker_colours=None, figsize=None, subtype_titles=None, separate_subtypes=False, save_path=None, save_kwargs={}):
         # Get the number of subtypes
         N_S = samples_sequence.shape[0]
         # Get the number of features/biomarkers
@@ -359,7 +359,9 @@ class MixtureSustain(AbstractSustain):
         # Otherwise reorder according to given order (or not if not given)
         else:
             biomarker_labels = [biomarker_labels[i] for i in biomarker_order]
-
+        # Check number of subtype titles is correct if given
+        if subtype_titles is not None:
+            assert len(subtype_titles) == N_S
         # Check biomarker label colours
         # If custom biomarker text colours are given
         if biomarker_colours is not None:
@@ -422,19 +424,22 @@ class MixtureSustain(AbstractSustain):
                 # And normalize for number of samples/sequences
                 confus_matrix = (this_samples_sequence==np.arange(N)[:, None, None]).sum(1) / this_samples_sequence.shape[0]
 
-                # Add axis title
-                if cval == False:
-                    temp_mean_f = np.mean(samples_f, 1)
-                    # Shuffle vals according to subtype_order
-                    # This defaults to previous method if custom order not given
-                    vals = temp_mean_f[subtype_order]
-
-                    if n_samples != np.inf:
-                        title_i = f"Subtype {i+1} (f={vals[i]:.2f}, n={np.round(vals[i] * n_samples):n})"
-                    else:
-                        title_i = f"Subtype {i+1} (f={vals[i]:.2f})"
+                if subtype_titles is not None:
+                    title_i = subtype_titles[i]
                 else:
-                    title_i = f"Subtype {i+1} cross-validated"
+                    # Add axis title
+                    if cval == False:
+                        temp_mean_f = np.mean(samples_f, 1)
+                        # Shuffle vals according to subtype_order
+                        # This defaults to previous method if custom order not given
+                        vals = temp_mean_f[subtype_order]
+
+                        if n_samples != np.inf:
+                            title_i = f"Subtype {i+1} (f={vals[i]:.2f}, n={np.round(vals[i] * n_samples):n})"
+                        else:
+                            title_i = f"Subtype {i+1} (f={vals[i]:.2f})"
+                    else:
+                        title_i = f"Subtype {i+1} cross-validated"
 
                 # Plot the matrix
                 # Manually set vmin/vmax to handle edge cases
@@ -521,6 +526,87 @@ class MixtureSustain(AbstractSustain):
     # ********************* TEST METHODS
     @classmethod
     def test_sustain(cls, n_biomarkers, n_samples, n_subtypes, ground_truth_subtypes, sustain_kwargs, seed=42, mixture_type="mixture_GMM"):
+        from pathlib import Path
+        # Path to load/save the arrays
+        array_path = Path.cwd() / "mixture_arrays.npz"
+        # If not present, create and save the mixture arrays
+        # NOTE: This will require kde_ebm to be installed, but should not be required by users
+        if not Path(array_path).is_file():
+            cls.create_mixture_data(n_biomarkers, n_samples, n_subtypes, ground_truth_subtypes, seed, mixture_type, save_path=array_path)
+        # Load the saved arrays
+        npzfile = np.load("mixture_arrays.npz")
+        # Extract the arrays
+        L_yes = npzfile['L_yes']
+        L_no = npzfile['L_no']
+        return cls(
+            L_yes, L_no,
+            **sustain_kwargs
+        )
+
+    # TODO: Refactor as Zscore func
+    def generate_random_model(N_biomarkers, N_S):
+        S                                   = np.zeros((N_S, N_biomarkers))
+        #try 30 times to find a unique sequence for each subtype
+        for i in range(30): 
+            matched_others                  = False
+            for s in range(N_S):
+                S[s, :]                     = np.random.permutation(N_biomarkers)
+                #compare to all previous sequences
+                for i in range(s):
+                    if np.all(S[s, :] == S[i, :]):
+                        matched_others      = True
+            #all subtype sequences are unique, so break
+            if not matched_others:
+                break
+        if matched_others:
+            print('WARNING: Iterated 30 times and could not find unique sequences for all subtypes.')
+        return S
+
+    @staticmethod
+    def generate_data(subtypes, stages, gt_ordering, mixture_style):
+        N_biomarkers                        = gt_ordering.shape[1]
+        N_subjects                          = len(subtypes)
+        #controls are always drawn from N(0, 1) distribution
+        mean_controls                       = np.array([0]   * N_biomarkers)
+        std_controls                        = np.array([0.25] * N_biomarkers)
+        #mean and variance for cases
+        #if using mixture_GMM, use normal distribution with mean 1 and std. devs sampled from a range
+        if mixture_style == 'mixture_GMM':
+            mean_cases                      = np.array([1.5] * N_biomarkers)
+            std_cases                       = np.random.uniform(0.25, 0.50, N_biomarkers)
+        #if using mixture_KDE, use log normal with mean 0.5 and std devs sampled from a range
+        elif mixture_style == 'mixture_KDE':
+            mean_cases                      = np.array([0.5] * N_biomarkers)
+            std_cases                       = np.random.uniform(0.2, 0.5, N_biomarkers)
+
+        data                                = np.zeros((N_subjects, N_biomarkers))
+        data_denoised                       = np.zeros((N_subjects, N_biomarkers))
+
+        stages                              = stages.astype(int)
+        #loop over all subjects, creating measurment for each biomarker based on what subtype and stage they're in
+        for i in range(N_subjects):
+            S_i                             = gt_ordering[subtypes[i], :].astype(int)
+            stage_i                         = stages[i].item()
+
+            #fill in with ABNORMAL values up to the subject's stage
+            for j in range(stage_i):
+
+                if      mixture_style == 'mixture_KDE':
+                    sample_j                = np.random.lognormal(mean_cases[S_i[j]], std_cases[S_i[j]])
+                elif    mixture_style == 'mixture_GMM':
+                    sample_j                = np.random.normal(mean_cases[S_i[j]], std_cases[S_i[j]])
+
+                data[i, S_i[j]]             = sample_j
+                data_denoised[i, S_i[j]]    = mean_cases[S_i[j]]
+
+            # fill in with NORMAL values from the subject's stage+1 to last stage
+            for j in range(stage_i, N_biomarkers):
+                data[i, S_i[j]]             = np.random.normal(mean_controls[S_i[j]], std_controls[S_i[j]])
+                data_denoised[i, S_i[j]]    = mean_controls[S_i[j]]
+        return data, data_denoised #, stage_value
+
+    @classmethod
+    def create_mixture_data(cls, n_biomarkers, n_samples, n_subtypes, ground_truth_subtypes, seed, mixture_type, save_path):
         # Avoid import outside of testing
         from kde_ebm.mixture_model import fit_all_gmm_models, fit_all_kde_models #from mixture_model import fit_all_gmm_models, fit_all_kde_models
         # Set a global seed to propagate (particularly for mixture_model)
@@ -557,7 +643,7 @@ class MixtureSustain(AbstractSustain):
             mixtures = fit_all_gmm_models(data, labels)
         elif mixture_type == "mixture_KDE":
             mixtures = fit_all_kde_models(data, labels)
-        
+
         L_yes = np.zeros(data.shape)
         L_no = np.zeros(data.shape)
         for i in range(n_biomarkers):
@@ -565,70 +651,5 @@ class MixtureSustain(AbstractSustain):
                 L_no[:, i], L_yes[:, i] = mixtures[i].pdf(None, data[:, i])
             elif mixture_type == "mixture_KDE":
                 L_no[:, i], L_yes[:, i] = mixtures[i].pdf(data[:, i].reshape(-1, 1))
-
-        return cls(
-            L_yes, L_no,
-            **sustain_kwargs
-        )
-
-    # TODO: Refactor as Zscore func
-    def generate_random_model(N_biomarkers, N_S):
-        S                                   = np.zeros((N_S, N_biomarkers))
-        #try 30 times to find a unique sequence for each subtype
-        for i in range(30): 
-            matched_others                  = False
-            for s in range(N_S):
-                S[s, :]                     = np.random.permutation(N_biomarkers)
-                #compare to all previous sequences
-                for i in range(s):
-                    if np.all(S[s, :] == S[i, :]):
-                        matched_others      = True
-            #all subtype sequences are unique, so break
-            if not matched_others:
-                break
-        if matched_others:
-            print('WARNING: Iterated 30 times and could not find unique sequences for all subtypes.')
-        return S
-
-    # TODO: Refactor as Zscore func
-    def generate_data(subtypes, stages, gt_ordering, mixture_style):
-        N_biomarkers                        = gt_ordering.shape[1]
-        N_subjects                          = len(subtypes)
-        #controls are always drawn from N(0, 1) distribution
-        mean_controls                       = np.array([0]   * N_biomarkers)
-        std_controls                        = np.array([0.25] * N_biomarkers)
-        #mean and variance for cases
-        #if using mixture_GMM, use normal distribution with mean 1 and std. devs sampled from a range
-        if mixture_style == 'mixture_GMM':
-            mean_cases                      = np.array([1.5] * N_biomarkers)
-            std_cases                       = np.random.uniform(0.25, 0.50, N_biomarkers)
-        #if using mixture_KDE, use log normal with mean 0.5 and std devs sampled from a range
-        elif mixture_style == 'mixture_KDE':
-            mean_cases                      = np.array([0.5] * N_biomarkers)
-            std_cases                       = np.random.uniform(0.2, 0.5, N_biomarkers)
-
-        data                                = np.zeros((N_subjects, N_biomarkers))
-        data_denoised                       = np.zeros((N_subjects, N_biomarkers))
-
-        stages                              = stages.astype(int)
-        #loop over all subjects, creating measurment for each biomarker based on what subtype and stage they're in
-        for i in range(N_subjects):
-            S_i                             = gt_ordering[subtypes[i], :].astype(int)
-            stage_i                         = np.asscalar(stages[i])
-
-            #fill in with ABNORMAL values up to the subject's stage
-            for j in range(stage_i):
-
-                if      mixture_style == 'mixture_KDE':
-                    sample_j                = np.random.lognormal(mean_cases[S_i[j]], std_cases[S_i[j]])
-                elif    mixture_style == 'mixture_GMM':
-                    sample_j                = np.random.normal(mean_cases[S_i[j]], std_cases[S_i[j]])
-
-                data[i, S_i[j]]             = sample_j
-                data_denoised[i, S_i[j]]    = mean_cases[S_i[j]]
-
-            # fill in with NORMAL values from the subject's stage+1 to last stage
-            for j in range(stage_i, N_biomarkers):
-                data[i, S_i[j]]             = np.random.normal(mean_controls[S_i[j]], std_controls[S_i[j]])
-                data_denoised[i, S_i[j]]    = mean_controls[S_i[j]]
-        return data, data_denoised #, stage_value
+        # Save the arrays
+        np.savez(save_path, L_yes=L_yes, L_no=L_no)

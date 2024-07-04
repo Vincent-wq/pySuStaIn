@@ -264,16 +264,15 @@ class AbstractSustain(ABC):
         if select_fold != []:
             if np.isscalar(select_fold):
                 select_fold                 = [select_fold]
-            Nfolds                          = len(select_fold)
         else:
             select_fold                     = np.arange(len(test_idxs)) #test_idxs
-            Nfolds                          = len(test_idxs)
+        Nfolds                              = len(select_fold)
 
         is_full                             = Nfolds == len(test_idxs)
 
         loglike_matrix                      = np.zeros((Nfolds, self.N_S_max))
 
-        for fold in tqdm(range(Nfolds), "Folds: ", Nfolds, position=0, leave=True):
+        for fold in tqdm(select_fold, "Folds: ", Nfolds, position=0, leave=True):
 
             indx_test                       = test_idxs[fold]
             indx_train                      = np.array([x for x in range(self.__sustainData.getNumSamples()) if x not in indx_test])
@@ -327,7 +326,7 @@ class AbstractSustain(ABC):
                     ml_likelihood,          \
                     samples_sequence,       \
                     samples_f,              \
-                    samples_likelihood           = self._estimate_uncertainty_sustain_model(sustainData_test, seq_init, f_init)
+                    samples_likelihood           = self._estimate_uncertainty_sustain_model(sustainData_train, seq_init, f_init)
 
                     samples_likelihood_subj_test = self._evaluate_likelihood_setofsamples(sustainData_test, samples_sequence, samples_f)
 
@@ -363,15 +362,17 @@ class AbstractSustain(ABC):
 
         if plot:
             import pandas as pd
-            import pylab
-            df_loglike                                 = pd.DataFrame(data = loglike_matrix, columns = ["Subtype " + str(i+1) for i in range(self.N_S_max)])
-            df_loglike.boxplot(grid=False, fontsize=15)
+            fig, ax = plt.subplots()
+
+            df_loglike = pd.DataFrame(data = loglike_matrix, columns = ["Subtype " + str(i+1) for i in range(self.N_S_max)])
+            df_loglike.boxplot(grid=False, ax=ax, fontsize=15)
             for i in range(self.N_S_max):
-                y                                   = df_loglike[["Subtype " + str(i+1)]]
-                x                                   = np.random.normal(1+i, 0.04, size=len(y)) # Add some random "jitter" to the x-axis
-                pylab.plot(x, y, 'r.', alpha=0.2)
-            pylab.savefig(Path(self.output_folder) / 'Log_likelihoods_cv_folds.png')
-            pylab.show()
+                y = df_loglike[["Subtype " + str(i+1)]]
+                # Add some random "jitter" to the x-axis
+                x = np.random.normal(1+i, 0.04, size=len(y))
+                ax.plot(x, y.values, 'r.', alpha=0.2)
+            fig.savefig(Path(self.output_folder) / 'Log_likelihoods_cv_folds.png')
+            fig.show()
 
         CVIC                            = np.zeros(self.N_S_max)
 
@@ -569,8 +570,9 @@ class AbstractSustain(ABC):
 
         for i in range(nSamples):
             this_prob_subtype               = np.squeeze(prob_subtype[i, :])
-
+            # if not np.isnan(this_prob_subtype).any()
             if (np.sum(np.isnan(this_prob_subtype)) == 0):
+                # this_subtype = this_prob_subtype.argmax(
                 this_subtype                = np.where(this_prob_subtype == np.max(this_prob_subtype))
 
                 try:
@@ -586,11 +588,16 @@ class AbstractSustain(ABC):
                         prob_ml_subtype[i]  = this_prob_subtype[this_subtype[0][0]]
 
             this_prob_stage                 = np.squeeze(prob_subtype_stage[i, :, int(ml_subtype[i])])
+            
             if (np.sum(np.isnan(this_prob_stage)) == 0):
+                # this_stage = 
                 this_stage                  = np.where(this_prob_stage == np.max(this_prob_stage))
                 ml_stage[i]                 = this_stage[0][0]
                 prob_ml_stage[i]            = this_prob_stage[this_stage[0][0]]
-
+        # NOTE: The above loop can be replaced with some simpler numpy calls
+        # May need to do some masking to avoid NaNs, or use `np.nanargmax` depending on preference
+        # E.g. ml_subtype == prob_subtype.argmax(1)
+        # E.g. ml_stage == prob_subtype_stage[np.arange(prob_subtype_stage.shape[0]), :, ml_subtype].argmax(1)
         return ml_subtype, prob_ml_subtype, ml_stage, prob_ml_stage, prob_subtype, prob_stage, prob_subtype_stage
 
     # ********************* PROTECTED METHODS
